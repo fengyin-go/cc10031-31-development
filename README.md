@@ -79,5 +79,27 @@ npm run dev
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
 
+## 流程版本快照（发布冻结）
+
+流程发布原本只更新状态，步骤记录后续可被继续编辑，已生成的执行计划无法说明
+依据哪一版步骤。平台在发布瞬间读取 RPA 流程配置与当前步骤编排数据，解析发布
+采用的步骤集合与参数，深拷贝生成带版本标识的**流程版本快照**，流程版本与步骤
+集合在同一把锁内原子冻结，后续步骤编辑不能改写已发布版本的执行计划依据。
+
+- 存储与服务：`backend/app/store.py`（`FlowVersionStore` / `ProcessItemStore`）、
+  `backend/app/services/flow_version.py`
+- 发布冻结入口：`BotDefinitionService.publish_bot`（发布即冻结），冲突策略：
+  - `freeze_before_edit`：发布事件冻结编辑前步骤，立即进入「已冻结」终态；
+  - `publish_after_edit`：先登记「待发布」版本，编辑完成后再转「已冻结」。
+  - 两种策略一次冲突都只生成一个可执行流程版本。
+- 任务队列按处理项口径加载关联快照，按快照步骤集合生成执行计划任务清单；
+  处理项以幂等键去重（重复提交只保留一条结果），并提供处理台账与结果清单
+  联动核对、翻页定位与「按流程名称+版本定位执行计划来源」。
+- 接口前缀：`/api/flow-versions`、`/api/process-items`、
+  `/api/bot-definition/{id}/publish-freeze`、`/api/bot-definition/{id}/editing`。
+- 前端页面：侧边栏「流程版本快照」（`frontend/src/views/FlowVersionView.vue`），
+  可按流程名称、目标系统、版本查看快照并核对步骤集合、执行计划来源和当前版本任务。
+- 测试：`backend/tests/test_flow_version.py`。
+
 领域：数据工程
 子方向：数据采集、爬虫与RPA

@@ -9,11 +9,10 @@
 """
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.flow_version import FlowVersionService
 from app.store import store
 
 
@@ -29,13 +28,27 @@ class BotDefinitionService(BaseModuleService):
 
     # ---- 跨模块业务方法 ----
 
-    def publish_bot(self, bot_id: int) -> dict[str, Any] | None:
-        """发布流程：变更状态并写入跨模块数据通道，供 step_editor 消费。
+    def publish_bot(
+        self,
+        bot_id: int,
+        conflict_policy: str = FlowVersionService.POLICY_FREEZE_BEFORE_EDIT,
+    ) -> dict[str, Any] | None:
+        """发布流程：变更状态并原子冻结流程版本快照，再写入跨模块数据通道。
 
-        数据流：bot_definition → channel("rpa.bot_created") → step_editor
+        发布不再只更新状态——同一事务内读取当前流程版本编排的步骤集合
+        与参数，深拷贝生成带版本标识的流程版本快照。后续步骤继续编辑
+        不会改写已发布版本的执行计划依据。
+
+        发布与步骤编辑并发时：
+        - freeze_before_edit：发布事件冻结编辑前步骤（立即产生可执行版本）；
+        - publish_after_edit：先登记待发布版本，编辑完成后再形成发布版本。
+        两种策略都只生成一个可执行流程版本。
+
+        数据流：bot_definition → flow_version(冻结) → channel
+        ("rpa.bot_created" / "rpa.flow_version_published") → step_editor/task_queue
 
         Returns:
-            成功时返回 channel 消息概要，失败返回 None
+            成功时返回 channel 消息与快照概要，失败返回 None
         """
         entry = store.find(self.MODULE, bot_id)
         if entry is None:
@@ -46,7 +59,14 @@ class BotDefinitionService(BaseModuleService):
             return None
         entry["status"] = "已发布"
         entry["pending"] = False
-        entry["version"] = entry.get("版本号", "1.0.0")
+
+        # 原子冻结流程版本快照（流程版本与步骤集合一起落库，不可被后续编辑改写）
+        snapshot, note = self._flow_versions.publish_freeze(
+            bot_id, conflict_policy=conflict_policy)
+        if snapshot is None:
+            return None
+        entry["version"] = snapshot.version
+        entry["版本号"] = snapshot.version
 
         # 写入跨模块数据通道
         channel_payload = {
@@ -58,6 +78,8 @@ class BotDefinitionService(BaseModuleService):
             "timeout": entry.get("超时上限", "300s"),
             "failure_strategy": entry.get("失败策略", "重试"),
             "version": entry.get("version"),
+            "snapshot_id": snapshot.snapshot_id,
+            "plan_source": snapshot.source,
         }
         msg = store.channel.publish(
             topic="rpa.bot_created",
@@ -69,7 +91,15 @@ class BotDefinitionService(BaseModuleService):
             "status": entry["status"],
             "msg_id": msg.msg_id,
             "topic": msg.topic,
+            "snapshot_id": snapshot.snapshot_id,
+            "version": snapshot.version,
+            "version_seq": snapshot.version_seq,
+            "snapshot_status": snapshot.status,
+            "step_count": snapshot.step_count,
+            "note": note,
         }
+
+    _flow_versions = FlowVersionService()
 
     def query_active_bots(self) -> list[dict[str, Any]]:
         """查询所有已发布（活跃）的流程，供调度和编排查询。"""

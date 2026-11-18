@@ -59,6 +59,8 @@ def nodestats(module: str | None = Query(default=None)) -> dict[str, object]:
     # 附加非模块服务
     snapshots["runtime_session"] = runtime_session.domain_snapshot()
     snapshots["callback_hook"] = callback_hook.domain_snapshot()
+    from app.services.flow_version import flow_version_service
+    snapshots["flow_version"] = flow_version_service.domain_snapshot()
 
     # 存储基础设施概览
     infra = {
@@ -72,6 +74,8 @@ def nodestats(module: str | None = Query(default=None)) -> dict[str, object]:
         "dirty_vault": store.dirty_vault.snapshot(),
         "collect_records": store.collect_records.snapshot(),
         "recovery": store.recovery.snapshot(),
+        "flow_versions": store.flow_versions.snapshot(),
+        "process_items": store.process_items.snapshot(),
     }
 
     return {"modules": snapshots, "infrastructure": infra}
